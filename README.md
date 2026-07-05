@@ -32,6 +32,7 @@ Arte de cartas en SVG dibujado a mano, sonidos generados con Web Audio API.
 - **Guardado automático**: la partida se guarda sola en tu navegador; si cierras o recargas, al volver aparece "Continuar partida".
 - **Instalable (PWA)**: desde el menú del navegador puedes "Agregar a pantalla de inicio" y jugar sin conexión (`manifest.json` + `sw.js` + `icon.svg`).
 - Menú "⋮" dentro de la partida para reiniciar o terminar en cualquier momento.
+- **Música de fondo generativa**: un pad de acordes cálido compuesto en vivo con Web Audio (sin archivos de audio externos), con su propio botón de silencio independiente del de efectos.
 
 ## Publicar en GitHub Pages
 

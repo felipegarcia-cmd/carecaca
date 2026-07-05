@@ -827,26 +827,10 @@
     animation:foilSweep 3.6s ease-in-out infinite;
     pointer-events:none; z-index:2;
   }
-  /* Figura central para J/Q/K — marco ornamental dorado tipo retrato */
+  /* Figura central para J/Q/K — la escena del trono habla por sí sola, sin marco encima */
   .card.face .center{
     font-size:22px;
-    background:
-      radial-gradient(ellipse at 50% 32%, rgba(231,193,75,.30), rgba(231,193,75,.05) 72%),
-      linear-gradient(180deg, rgba(255,246,215,.5), rgba(238,214,158,.18));
-    border:1px double rgba(160,110,20,.65); border-radius:5px;
-    box-shadow:inset 0 0 8px rgba(180,130,30,.28), inset 0 1px 0 rgba(255,255,255,.35);
-    margin:0; inset:13px 4px 13px 4px;
-  }
-  /* Tapiz del retrato tintado por palo — la corte roja y la corte negra */
-  .card.face.red .center{
-    background:
-      radial-gradient(ellipse at 50% 32%, rgba(200,30,30,.16), rgba(200,30,30,.03) 72%),
-      linear-gradient(180deg, rgba(255,240,228,.55), rgba(243,208,188,.22));
-  }
-  .card.face.black .center{
-    background:
-      radial-gradient(ellipse at 50% 32%, rgba(45,65,95,.16), rgba(45,65,95,.03) 72%),
-      linear-gradient(180deg, rgba(238,243,248,.55), rgba(208,218,230,.24));
+    margin:0; inset:9px 3px 9px 3px;
   }
   .card.joker{
     background:
@@ -1342,6 +1326,101 @@ const SFX = {
   },
 };
 
+/* =========================================================================
+   MÚSICA DE FONDO — acordes generativos tipo pad, cálidos, en loop lento
+   (mismo motor Web Audio, sin archivos externos; comparte el bus maestro de SFX)
+   ========================================================================= */
+const MUSIC = {
+  _muted: false,
+  _playing: false,
+  _timer: null,
+  _nodes: [],
+  _bus: null,
+  _chordIdx: 0,
+  // Progresión cálida en Re menor — evoca una taberna/casino a media luz
+  _chords: [
+    [146.83, 174.61, 220.00],  // Dm  (D3 F3 A3)
+    [116.54, 146.83, 174.61],  // Bb  (Bb2 D3 F3)
+    [174.61, 220.00, 261.63],  // F   (F3 A3 C4)
+    [130.81, 164.81, 196.00],  // C   (C3 E3 G3)
+  ],
+  get muted(){ return this._muted; },
+  init(){
+    try{ this._muted = localStorage.getItem('carecaca_music_muted')==='1'; }catch(e){}
+  },
+  toggle(){
+    this._muted = !this._muted;
+    try{ localStorage.setItem('carecaca_music_muted', this._muted?'1':'0'); }catch(e){}
+    if(this._muted) this.stop(); else this.start();
+    render();
+  },
+  start(){
+    if(this._muted || this._playing) return;
+    try{
+      const ctx = SFX.ctx();
+      if(ctx.state==='suspended') ctx.resume().then(()=>this._begin()).catch(()=>{});
+      else this._begin();
+    }catch(e){}
+  },
+  _begin(){
+    if(this._playing || this._muted) return;
+    this._playing = true;
+    const ctx = SFX.ctx();
+    this._bus = ctx.createGain();
+    this._bus.gain.setValueAtTime(0, ctx.currentTime);
+    this._bus.gain.linearRampToValueAtTime(.15, ctx.currentTime+1.6);
+    this._bus.connect(SFX._out(ctx));
+    this._playChord();
+  },
+  _playChord(){
+    if(!this._playing) return;
+    const ctx = SFX.ctx(), t = ctx.currentTime, dur = 7.4;
+    const freqs = this._chords[this._chordIdx % this._chords.length];
+    const chordGain = ctx.createGain();
+    chordGain.gain.setValueAtTime(0, t);
+    chordGain.gain.linearRampToValueAtTime(1, t+2.4);
+    chordGain.gain.setValueAtTime(1, t+dur-2.6);
+    chordGain.gain.linearRampToValueAtTime(0, t+dur);
+    chordGain.connect(this._bus);
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'lowpass'; filt.frequency.value = 950; filt.Q.value = .4;
+    filt.connect(chordGain);
+    freqs.forEach((f,i)=>{
+      [1, 1.004, 0.997].forEach(det=>{   // 3 voces desafinadas apenas = chorus cálido
+        const o = ctx.createOscillator();
+        o.type = i===0 ? 'triangle' : 'sine';
+        o.frequency.value = f*det;
+        const og = ctx.createGain(); og.gain.value = i===0 ? .5 : .3;
+        o.connect(og); og.connect(filt);
+        o.start(t); o.stop(t+dur+.15);
+        this._nodes.push(o);
+      });
+    });
+    this._chordIdx++;
+    this._timer = setTimeout(()=>this._playChord(), dur*1000 - 350);
+  },
+  stop(){
+    if(!this._playing) return;
+    this._playing = false;
+    clearTimeout(this._timer);
+    const ctx = SFX.ctx(), bus = this._bus;
+    if(bus){
+      const t = ctx.currentTime;
+      bus.gain.cancelScheduledValues(t);
+      bus.gain.setValueAtTime(bus.gain.value, t);
+      bus.gain.linearRampToValueAtTime(0, t+.4);
+    }
+    const nodes = this._nodes; this._nodes = [];
+    setTimeout(()=>{
+      nodes.forEach(o=>{ try{ o.stop(); }catch(e){} });
+      if(bus){ try{ bus.disconnect(); }catch(e){} }
+      if(this._bus===bus) this._bus = null;
+    }, 450);
+  },
+};
+MUSIC.init();
+function toggleMusic(){ MUSIC.toggle(); }
+
 /* Vibración háptica (Android; en iOS no hace nada) */
 function buzz(pattern){ try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(e){} }
 
@@ -1354,6 +1433,8 @@ async function keepAwake(){
 }
 document.addEventListener('visibilitychange', ()=>{
   if(document.visibilityState==='visible' && G.phase!=='menu' && !G.over) keepAwake();
+  if(document.hidden) MUSIC.stop();
+  else if(!MUSIC.muted) MUSIC.start();
 });
 
 /* Chispas y brasas que suben desde el pozo al quemarse (partículas dibujadas) */
@@ -1526,6 +1607,7 @@ function resumeGame(){
   const snap = loadSave();
   if(!snap || !snap.players || !snap.players.length) return false;
   closeOverlay();
+  MUSIC.start();
   Object.assign(G, {
     players: snap.players, pile: snap.pile, drawPile: snap.drawPile,
     dir: snap.dir, lo: snap.lo, cur: snap.cur,
@@ -1592,6 +1674,7 @@ function mkPlayer(id,name,human,diff){ return {id,name,human,diff:diff||null,han
 
 function initGame(){
   closeOverlay();
+  MUSIC.start();
   // Mezcla aleatoria de dificultades entre las 3 IA según el modo
   const diffs = shuffle(DIFF_MODES[GAME_MODE].slice());
   const deck  = shuffle(buildDeck());
@@ -3057,6 +3140,7 @@ function render(){
       <div class="chip" title="Modo de juego">🎯 ${MODE_LABELS[GAME_MODE]}</div>
       <div class="toggle ${help?'on':''}" onclick="toggleHelp()">Ayuda<div class="sw"><b></b></div></div>
       <button class="btn sm ghost" onclick="SFX.toggle()" title="${SFX.muted?'Activar sonido':'Silenciar'}" style="padding:4px 8px;min-height:0;font-size:16px;">${SFX.muted?'🔇':'🔊'}</button>
+      <button class="btn sm ghost" onclick="toggleMusic()" title="${MUSIC.muted?'Activar música':'Silenciar música'}" style="padding:4px 8px;min-height:0;font-size:16px;opacity:${MUSIC.muted?.4:1};">🎵</button>
       <div class="topmenu-wrap">
         <button class="btn sm ghost" onclick="toggleTopMenu(event)" title="Más opciones" style="padding:4px 8px;min-height:0;font-size:16px;">⋮</button>
         ${G.topMenuOpen ? `
@@ -3246,6 +3330,10 @@ function menuHTML(){
       <div class="menu-logo">CARE<span class="em">CACA</span></div>
       <div class="menu-emblem">${SVG.emblem}</div>
       <div class="menu-sub">El clásico juego de cartas chileno · 1 jugador vs 3 rivales IA</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn sm ghost" onclick="SFX.toggle()" title="${SFX.muted?'Activar sonido':'Silenciar'}" style="padding:5px 10px;min-height:0;font-size:15px;">${SFX.muted?'🔇':'🔊'}</button>
+        <button class="btn sm ghost" onclick="toggleMusic()" title="${MUSIC.muted?'Activar música':'Silenciar música'}" style="padding:5px 10px;min-height:0;font-size:15px;opacity:${MUSIC.muted?.4:1};">🎵</button>
+      </div>
       <div class="diff-row">
         <div class="diff-title">Dificultad</div>
         <div class="diff-opts">
@@ -3366,6 +3454,12 @@ try{
 if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')){
   window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
 }
+
+// Música: arranca con el primer toque/click (las políticas de autoplay lo exigen)
+document.addEventListener('pointerdown', function _firstTouch(){
+  document.removeEventListener('pointerdown', _firstTouch);
+  MUSIC.start();
+}, {once:true});
 </script>
 
 
