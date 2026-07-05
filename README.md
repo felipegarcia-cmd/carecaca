@@ -26,11 +26,16 @@ Además: **quema automática** con 4 cartas iguales seguidas, **elástico** (si 
 
 ## Tecnología
 
-Un solo archivo `index.html`: sin dependencias, sin build, sin backend.
+El juego vive en `index.html`: sin dependencias, sin build, sin backend.
 Arte de cartas en SVG dibujado a mano, sonidos generados con Web Audio API.
+
+- **Guardado automático**: la partida se guarda sola en tu navegador; si cierras o recargas, al volver aparece "Continuar partida".
+- **Instalable (PWA)**: desde el menú del navegador puedes "Agregar a pantalla de inicio" y jugar sin conexión (`manifest.json` + `sw.js` + `icon.svg`).
+- Menú "⋮" dentro de la partida para reiniciar o terminar en cualquier momento.
 
 ## Publicar en GitHub Pages
 
-1. Crea un repositorio y sube este proyecto.
+1. Crea un repositorio y sube este proyecto (incluyendo `manifest.json`, `sw.js` e `icon.svg`).
 2. En el repo: **Settings → Pages → Source: Deploy from a branch → `main` / root**.
 3. En un minuto queda disponible en `https://<tu-usuario>.github.io/<repo>/`.
+4. Si actualizas `index.html` más adelante, sube también la versión del caché en `sw.js` (`CACHE = 'carecaca-v2'`, etc.) para que los usuarios reciban los cambios.

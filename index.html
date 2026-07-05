@@ -11,6 +11,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Carecaca">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.svg">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 30'%3E%3Crect width='24' height='30' rx='5' fill='%230b1740'/%3E%3Cg fill='none' stroke='%23e7c14b' stroke-width='1.5' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M6.9 8.1 7.9 3.4l2.4 2.4L12 2.6l1.7 3.2 2.4-2.4 1 4.7z' fill='rgba(231,193,75,.32)'/%3E%3Crect x='8.4' y='10.1' width='7.2' height='5.5' rx='1'/%3E%3Cpath d='M6.1 15.6h11.8c-.3 3.9-2.6 6.1-5.9 6.1s-5.6-2.2-5.9-6.1z'/%3E%3Cpath d='M9.5 21.9h5l.6 2.5H8.9z'/%3E%3Cpath d='M7.7 24.4h8.6v1.9H7.7z'/%3E%3C/g%3E%3C/svg%3E">
 <title>Carecaca — juego de cartas</title>
 <style>
@@ -171,6 +173,24 @@
   .toggle .sw b{position:absolute; top:2px; left:2px; width:18px;height:18px;border-radius:50%; background:#bbb; transition:.15s;}
   .toggle.on .sw{background:var(--gold);}
   .toggle.on .sw b{left:18px; background:#fff;}
+
+  /* Menú "⋮" de la topbar: reiniciar / terminar partida */
+  .topmenu-wrap{position:relative;}
+  .topmenu-backdrop{position:fixed; inset:0; z-index:54;}
+  .topmenu-drop{
+    position:absolute; top:calc(100% + 6px); right:0; z-index:55;
+    background:#11241a; border:1.5px solid rgba(231,193,75,.55); border-radius:12px;
+    padding:6px; display:flex; flex-direction:column; gap:2px; min-width:172px;
+    box-shadow:0 10px 28px rgba(0,0,0,.55);
+    animation:panelIn .16s cubic-bezier(.34,1.56,.64,1) both;
+  }
+  .topmenu-drop button{
+    background:none; border:none; color:var(--muted); text-align:left;
+    padding:10px 11px; border-radius:8px; font-size:13.5px; font-weight:700;
+    font-family:inherit; cursor:pointer;
+  }
+  .topmenu-drop button:active{background:rgba(231,193,75,.14);}
+  .topmenu-drop button.danger{color:#ffa79d;}
 
   /* ---------- felt table — grid 3x3 + zona inferior ---------- */
   .felt{
@@ -349,6 +369,12 @@
   .menu-sub{color:var(--muted);font-size:14px;text-align:center;max-width:260px;line-height:1.5;}
   .menu-btns{display:flex;flex-direction:column;gap:12px;width:220px;}
   .menu-btns .btn{font-size:17px;padding:14px;border-radius:14px;}
+  /* tutorial de bienvenida */
+  .onb-icon{width:64px;margin:4px auto 6px;line-height:0;filter:drop-shadow(0 3px 10px rgba(0,0,0,.5));}
+  .onb-icon svg{width:100%;height:auto;display:block;}
+  .onb-dots{display:flex;justify-content:center;gap:7px;margin:14px 0 16px;}
+  .onb-dot{width:7px;height:7px;border-radius:50%;background:rgba(231,193,75,.28);transition:.2s;}
+  .onb-dot.on{background:var(--gold);box-shadow:0 0 8px rgba(231,193,75,.6);}
   /* instrucciones */
   .rules{text-align:left;font-size:13px;line-height:1.65;color:var(--txt);}
   .rules h3{color:var(--gold);margin:10px 0 4px;font-size:14px;}
@@ -1467,8 +1493,59 @@ const G = {
   takeAnim: null,
   logOpen: false,
   turnSeq: 0,
+  topMenuOpen: false,
 };
 let _setupAnimated = false;
+
+/* ---------------- Persistencia (localStorage) ----------------
+   Se guarda solo en checkpoints "seguros": inicio de cada turno,
+   con G.pending===null (sin decisiones ni animaciones a medias). */
+const SAVE_KEY = 'carecaca_save_v2';
+function saveGame(){
+  if(G.phase!=='play' || G.over || G.pending) return;
+  try{
+    const snap = {
+      GAME_MODE,
+      players: G.players, pile: G.pile, drawPile: G.drawPile,
+      dir: G.dir, lo: G.lo, cur: G.cur,
+      lastPlayed: G.lastPlayed, lastPlayedCard: G.lastPlayedCard,
+      plays: G.plays, progAt: G.progAt,
+      log: G.log, finishOrder: G.finishOrder,
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(snap));
+  }catch(e){}
+}
+function clearSave(){ try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
+function loadSave(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+function resumeGame(){
+  const snap = loadSave();
+  if(!snap || !snap.players || !snap.players.length) return false;
+  closeOverlay();
+  Object.assign(G, {
+    players: snap.players, pile: snap.pile, drawPile: snap.drawPile,
+    dir: snap.dir, lo: snap.lo, cur: snap.cur,
+    lastPlayed: snap.lastPlayed, lastPlayedCard: snap.lastPlayedCard,
+    pending:null, sel:new Set(), msg:'', log: snap.log||[], burnFlash:false,
+    phase:'play', over:false, finishOrder: snap.finishOrder||[],
+    plays: snap.plays||0, progAt: snap.progAt||0,
+    skipFlash:new Set(), jokerAnim:null, revAnim:null, eightAnim:null,
+    elasticoFlash:false, elasticoPlay:false, aiElasticoPulse:false, elasticoFly:false, preBurn:false, pileNew:0,
+    ghostHandCards:null, takeAnim:null, logOpen:false, topMenuOpen:false,
+  });
+  GAME_MODE = snap.GAME_MODE || GAME_MODE;
+  _setupAnimated = true;
+  clearTimers();
+  keepAwake();
+  say('Partida recuperada');
+  turn();
+  return true;
+}
+function continueGame(){ if(!resumeGame()) initGame(); }
 
 /* ---------------- Construcción del mazo ---------------- */
 function mkCard(v, s, copy){
@@ -1552,8 +1629,9 @@ function initGame(){
     phase:'dealing', over:false, finishOrder:[], plays:0, progAt:0,
     skipFlash:new Set(), jokerAnim:null, revAnim:null, eightAnim:null,
     elasticoFlash:false, elasticoPlay:false, aiElasticoPulse:false, elasticoFly:false, preBurn:false, pileNew:0,
-    ghostHandCards:null, takeAnim:null, logOpen:false,
+    ghostHandCards:null, takeAnim:null, logOpen:false, topMenuOpen:false,
   });
+  clearSave();
   _setupAnimated = false;
   clearTimers();
   keepAwake();
@@ -1654,6 +1732,7 @@ function turn(){
   G.sel = new Set();
   const p = G.players[G.cur];
   render();
+  saveGame();
   if(!p.human){
     // Token de turno: si el flujo se redirige (elástico, joker, quema…),
     // este timeout queda obsoleto y NO debe ejecutarse.
@@ -2088,6 +2167,7 @@ function endGame(reason){
   for(const p of rest){ p.outRecorded=true; G.finishOrder.push(p.id); }
   G.over = true;
   G.pending = null;
+  clearSave();
   say(reason==='stale' ? '⏳ Estancamiento: se define por número de cartas' : 'Fin de la partida…');
   // sonido de victoria o derrota para el humano
   const humanPos = G.finishOrder.indexOf(0);
@@ -2436,12 +2516,30 @@ const ROYAL_ROBE = {
   '♣':['#1f5e49','#0f3a2c'],   // verde bosque
   '♦':['#a32530','#6d1218'],   // rojo carmesí
 };
-/* Trono común: taza + pedestal + base + sombra en el piso */
+/* Trono común: brazos con remate dorado + taza con sombreado + pedestal + base */
 const THRONE_SVG =
-  `<ellipse cx="22" cy="55.2" rx="15.5" ry="2" fill="rgba(20,10,0,.12)"/>`+
+  `<ellipse cx="22" cy="55.2" rx="16.5" ry="2" fill="rgba(20,10,0,.16)"/>`+
+  // brazos del trono (postes dorados con esfera de remate) — quedan a los lados del personaje
+  `<rect x="5.2" y="30.5" width="2.7" height="12" rx="1.3" fill="#d4af37" stroke="#8a6a1f" stroke-width=".6"/>`+
+  `<circle cx="6.55" cy="29.2" r="2.15" fill="#e7c14b" stroke="#8a6a1f" stroke-width=".6"/>`+
+  `<circle cx="5.9" cy="28.5" r=".6" fill="rgba(255,255,255,.55)"/>`+
+  `<rect x="36.1" y="30.5" width="2.7" height="12" rx="1.3" fill="#d4af37" stroke="#8a6a1f" stroke-width=".6"/>`+
+  `<circle cx="37.45" cy="29.2" r="2.15" fill="#e7c14b" stroke="#8a6a1f" stroke-width=".6"/>`+
+  `<circle cx="36.8" cy="28.5" r=".6" fill="rgba(255,255,255,.55)"/>`+
+  // taza con volumen: base clara, sombra inferior y brillo superior
   `<path d="M8.6 40.5h26.8c-.5 5.2-4.4 8.2-13.4 8.2S9.1 45.7 8.6 40.5z" fill="#fbfcfd" stroke="#5b6570" stroke-width="1" stroke-linejoin="round"/>`+
+  `<path d="M10.4 43.1c2 3.1 5.8 4.9 11.6 4.9s9.6-1.8 11.6-4.9c-1.6 3.9-5.8 6-11.6 6s-10-2.1-11.6-6z" fill="rgba(110,122,135,.18)"/>`+
+  `<ellipse cx="16.8" cy="41.8" rx="4.6" ry="1.15" fill="rgba(255,255,255,.7)"/>`+
   `<path d="M17.2 48.6h9.6l1.1 4.4H16.1z" fill="#dde2e7" stroke="#5b6570" stroke-width=".9" stroke-linejoin="round"/>`+
-  `<rect x="12.2" y="52.9" width="19.6" height="2.9" rx="1.3" fill="#c3cbd3" stroke="#5b6570" stroke-width=".8"/>`;
+  `<rect x="12.2" y="52.9" width="19.6" height="2.9" rx="1.3" fill="#c3cbd3" stroke="#5b6570" stroke-width=".8"/>`+
+  `<rect x="13.4" y="53.35" width="17.2" height=".9" rx=".45" fill="rgba(255,255,255,.5)"/>`;
+/* Rasgos faciales comunes: cejas + sombra de mejillas + nariz — misma cara base para toda la corte */
+function royalFace(){
+  return `<path d="M18.9 19.6q1.1-.8 2.2-.15M22.9 19.45q1.1-.65 2.2.15" stroke="#8a5a34" stroke-width=".65" fill="none" stroke-linecap="round"/>`+
+         `<path d="M22 21.9v1.7q.55.35 1.1 0" stroke="#c99b5f" stroke-width=".55" fill="none" stroke-linecap="round"/>`+
+         `<ellipse cx="18.7" cy="24.3" rx="1.5" ry="1" fill="rgba(210,90,80,.22)"/>`+
+         `<ellipse cx="25.3" cy="24.3" rx="1.5" ry="1" fill="rgba(210,90,80,.22)"/>`;
+}
 /* Objeto en la mano derecha del personaje (mano en ~35,33) */
 function royalItem(rank, poopSkin){
   const hand = poopSkin
@@ -2467,59 +2565,100 @@ function royalItem(rank, poopSkin){
          `<ellipse cx="35" cy="37.4" rx="4.5" ry="1.2" fill="#a3251b" stroke="#7a150e" stroke-width=".6"/>`+
          hand.replace('{HY}','26');
 }
+/* Cejas + nariz + mejillas, ubicadas relativo a los ojos — reutilizable en cualquier cara */
+function royalFace(lx, rx, ey){
+  const cx = (lx+rx)/2;
+  return `<path d="M${(lx-1.1).toFixed(1)} ${(ey-1.35).toFixed(1)}q1.1-.8 2.2-.15M${(rx-1.1).toFixed(1)} ${(ey-1.5).toFixed(1)}q1.1-.65 2.2.15" stroke="#7a4f2c" stroke-width=".65" fill="none" stroke-linecap="round"/>`+
+         `<path d="M${cx.toFixed(1)} ${(ey+0.5).toFixed(1)}v1.7q.55.35 1.1 0" stroke="rgba(0,0,0,.28)" stroke-width=".5" fill="none" stroke-linecap="round"/>`+
+         `<ellipse cx="${(lx-1.3).toFixed(1)}" cy="${(ey+2.9).toFixed(1)}" rx="1.5" ry="1" fill="rgba(210,90,80,.24)"/>`+
+         `<ellipse cx="${(rx+1.3).toFixed(1)}" cy="${(ey+2.9).toFixed(1)}" rx="1.5" ry="1" fill="rgba(210,90,80,.24)"/>`;
+}
 function svgRoyal(rank, suit){
   const crown = rank==='K' ? SVG._crownRawK : rank==='Q' ? SVG._crownRawQ : SVG._crownRawJ;
   if(suit==='♥'){
     // Personaje de caca coronado sentado en el trono
     return `<svg viewBox="0 0 44 58">${THRONE_SVG}`+
       `<path d="M25 13.5c-3.2.4-4.6 2.7-3.6 5.2-3.7-.4-6 2-5.3 4.9-3.6.5-5.5 2.9-4.7 5.7-3.4.9-4.7 4.1-3 6.8 1.4 2.3 4.2 3.9 7.5 3.9h12.2c3.3 0 6.1-1.6 7.5-3.9 1.7-2.7.4-5.9-3-6.8.8-2.8-1.1-5.2-4.7-5.7.7-2.9-1.6-5.3-5.3-4.9 1-2.5-.4-4.8-3.6-5.2z" fill="#9c6428" stroke="#6f4218" stroke-width=".9" stroke-linejoin="round"/>`+
+      // sombra propia + brillos que redondean los tres montículos
+      `<path d="M28 19.4c3.3.6 5 2.7 4.7 5.4-3.2-4-7.6-5.3-13.4-4-3-.2-4.9 1.4-5.6 3.5.3-3.4 2.8-5.3 6.3-5.1.9-3.2 3.6-4.4 7-3.8z" fill="rgba(0,0,0,.12)"/>`+
       `<ellipse cx="15.6" cy="20.6" rx="2.6" ry="1.2" fill="rgba(255,235,200,.30)" transform="rotate(-16 15.6 20.6)"/>`+
+      `<ellipse cx="27.3" cy="22.4" rx="2.1" ry="1" fill="rgba(255,235,200,.22)" transform="rotate(18 27.3 22.4)"/>`+
       `<circle cx="18.4" cy="29.5" r="2.5" fill="#fff"/><circle cx="25.6" cy="29.5" r="2.5" fill="#fff"/>`+
       `<circle cx="18.7" cy="29.8" r="1.15" fill="#38220e"/><circle cx="25.3" cy="29.8" r="1.15" fill="#38220e"/>`+
       `<path d="M19.2 33.8q2.8 2.2 5.6 0" fill="none" stroke="#38220e" stroke-width="1.2" stroke-linecap="round"/>`+
+      royalFace(18.4, 25.6, 29.5)+
       royalItem(rank, true)+
       // la corona se apoya en el domo de la caca (cada rango a su altura)
-      `<g transform="translate(13,${rank==='K'?6:rank==='Q'?7.2:7.6}) scale(.75)">${crown}</g>`+
+      `<g transform="translate(13,${rank==='K'?6:rank==='Q'?7.2:7.6}) scale(.8)">${crown}</g>`+
     `</svg>`;
   }
   const [robe, robeD] = ROYAL_ROBE[suit] || ROYAL_ROBE['♠'];
   let hair = '';
   if(rank==='Q'){
     // melena larga que enmarca la cara
-    hair = `<path d="M14.3 33.6c-1.8-6.4-1.4-12 1.5-14.5 1.7-1.5 10.7-1.5 12.4 0 2.9 2.5 3.3 8.1 1.5 14.5l-2.6-.8c1.2-4.6 1.1-9.1-.7-10.8-1.4-1.3-6.8-1.3-8.2 0-1.8 1.7-1.9 6.2-.7 10.8z" fill="#8a5a26" stroke="#5e3c15" stroke-width=".6"/>`;
+    hair = `<path d="M14.3 33.6c-1.8-6.4-1.4-12 1.5-14.5 1.7-1.5 10.7-1.5 12.4 0 2.9 2.5 3.3 8.1 1.5 14.5l-2.6-.8c1.2-4.6 1.1-9.1-.7-10.8-1.4-1.3-6.8-1.3-8.2 0-1.8 1.7-1.9 6.2-.7 10.8z" fill="#8a5a26" stroke="#5e3c15" stroke-width=".6"/>`+
+           `<path d="M16.3 22.4q1.6-3 4-3.7M27.7 22.4q-1.6-3-4-3.7" stroke="rgba(255,255,255,.28)" stroke-width=".6" fill="none" stroke-linecap="round"/>`;
   } else if(rank==='K'){
-    // barba y bigote canosos
-    hair = `<path d="M15.7 22.5c-.3 5.8 2.3 9 6.3 9s6.6-3.2 6.3-9c-1.2 3.3-3.1 4.8-6.3 4.8s-5.1-1.5-6.3-4.8z" fill="#cfcfcf" stroke="#9a9a9a" stroke-width=".6"/><path d="M18.9 24.6q3.1 1.7 6.2 0" stroke="#cfcfcf" stroke-width="1.5" fill="none" stroke-linecap="round"/>`;
+    // barba y bigote canosos, con mechas de sombra
+    hair = `<path d="M15.7 22.5c-.3 5.8 2.3 9 6.3 9s6.6-3.2 6.3-9c-1.2 3.3-3.1 4.8-6.3 4.8s-5.1-1.5-6.3-4.8z" fill="#d8d8d8" stroke="#9a9a9a" stroke-width=".6"/>`+
+           `<path d="M17 24.4q1.2 3 5 3.4M27 24.4q-1.2 3-5 3.4" stroke="#aaa" stroke-width=".5" fill="none" opacity=".7"/>`+
+           `<path d="M18.9 24.6q3.1 1.7 6.2 0" stroke="#d8d8d8" stroke-width="1.5" fill="none" stroke-linecap="round"/>`;
   } else {
     // flequillo joven del paje
-    hair = `<path d="M15.6 19.5a6.4 6.4 0 0 1 12.8 0c-1.7-2.3-3.7-3.4-6.4-3.4s-4.7 1.1-6.4 3.4z" fill="#5a3a1a"/>`;
+    hair = `<path d="M15.6 19.5a6.4 6.4 0 0 1 12.8 0c-1.7-2.3-3.7-3.4-6.4-3.4s-4.7 1.1-6.4 3.4z" fill="#5a3a1a"/>`+
+           `<path d="M17.6 17.9q1.8-1.3 4.4-1.4" stroke="rgba(255,255,255,.22)" stroke-width=".55" fill="none" stroke-linecap="round"/>`;
+  }
+  // Adorno de la túnica según el rango: armiño real (K), perlas (Q), ribete sencillo (J)
+  let trim = '';
+  if(rank==='K'){
+    trim = [16.2,19.3,22,24.7,27.8].map((x,i)=>{
+      const y = 36.9 - Math.abs(i-2)*1.15;
+      return `<circle cx="${x}" cy="${y.toFixed(2)}" r="1.35" fill="#fbfbf6" stroke="#c9c2a8" stroke-width=".35"/><circle cx="${x}" cy="${(y-.55).toFixed(2)}" r=".42" fill="#2c2018"/>`;
+    }).join('');
+  } else if(rank==='Q'){
+    trim = [16.6,19.3,22,24.7,27.4].map((x,i)=>{
+      const y = 36.9 - Math.abs(i-2)*1.15;
+      return `<circle cx="${x}" cy="${y.toFixed(2)}" r=".85" fill="#f5f0e0" stroke="#c9a227" stroke-width=".35"/>`;
+    }).join('');
   }
   return `<svg viewBox="0 0 44 58">${THRONE_SVG}`+
-    // túnica sentada, drapeada sobre la taza
+    // túnica sentada, drapeada sobre la taza — con lado en sombra para dar volumen
     `<path d="M9.5 42q0-13 12.5-13T34.5 42z" fill="${robe}" stroke="${robeD}" stroke-width="1"/>`+
+    `<path d="M22 29.3q9.6.3 12.5 12.7H22z" fill="${robeD}" opacity=".32"/>`+
+    `<path d="M14.2 39.2q1-5.4 4.4-8.6M17.6 40.6q1.3-6 4.9-9.3" stroke="${robeD}" stroke-width=".55" fill="none" opacity=".45" stroke-linecap="round"/>`+
+    `<ellipse cx="13.6" cy="33.6" rx="1.9" ry="3.4" fill="rgba(255,255,255,.14)" transform="rotate(-18 13.6 33.6)"/>`+
+    trim+
     `<path d="M15.5 36.5 22 40.5l6.5-4" fill="none" stroke="#e7c14b" stroke-width="1.1" stroke-linecap="round"/>`+
     `<path d="M18.4 30.1q3.6 2.3 7.2 0" fill="none" stroke="#e7c14b" stroke-width=".9" stroke-linecap="round"/>`+
-    // cabeza
+    // cabeza con sombra lateral sutil
     `<ellipse cx="22" cy="21.5" rx="6.4" ry="7" fill="#f2cda6" stroke="#bd8f62" stroke-width=".8"/>`+
+    `<path d="M27 17.4c1.2 2.2 1.2 5.2-.2 7.6 1.6-2.6 1.7-6 .2-7.6z" fill="rgba(150,100,50,.14)"/>`+
     `<circle cx="19.8" cy="21.2" r=".8" fill="#2c2018"/><circle cx="24.2" cy="21.2" r=".8" fill="#2c2018"/>`+
     `<path d="M20 24.8q2 1.5 4 0" stroke="#8a5a34" stroke-width=".8" fill="none" stroke-linecap="round"/>`+
+    royalFace(19.8, 24.2, 21.2)+
     hair+
     royalItem(rank, false)+
-    `<g transform="translate(13,5) scale(.75)">${crown}</g>`+
+    `<g transform="translate(13,5) scale(.8)">${crown}</g>`+
   `</svg>`;
 }
 /* El Joker: bufón sentado en el trono con su sopapo-cetro */
 function svgJokerScene(){
   return `<svg viewBox="0 0 44 58">${THRONE_SVG}`+
-    // cuerpo de arlequín: mitad púrpura, mitad carmesí
+    // cuerpo de arlequín: mitad púrpura, mitad carmesí, con sombra que separa los paños
     `<path d="M9.5 42q0-13 12.5-13V42z" fill="#8e44ad" stroke="#5b2c6f" stroke-width="1"/>`+
     `<path d="M22 29q12.5 0 12.5 13H22z" fill="#c0392b" stroke="#7d241a" stroke-width="1"/>`+
+    `<path d="M22 29v13" stroke="rgba(0,0,0,.3)" stroke-width=".6"/>`+
+    `<circle cx="15.4" cy="35" r="1.1" fill="#f5d567" stroke="#8a6a1f" stroke-width=".3"/>`+
+    `<circle cx="28.6" cy="35" r="1.1" fill="#f5d567" stroke="#8a6a1f" stroke-width=".3"/>`+
     // cuello de bufón con cascabeles
     `<path d="M15 31.5l3.4 3 3.6-3 3.6 3 3.4-3" fill="none" stroke="#e7c14b" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>`+
     // cara pícara
     `<ellipse cx="22" cy="21.5" rx="6.4" ry="7" fill="#f2cda6" stroke="#bd8f62" stroke-width=".8"/>`+
+    `<path d="M27 17.4c1.2 2.2 1.2 5.2-.2 7.6 1.6-2.6 1.7-6 .2-7.6z" fill="rgba(150,100,50,.14)"/>`+
     `<circle cx="19.8" cy="21" r=".8" fill="#2c2018"/><circle cx="24.2" cy="21" r=".8" fill="#2c2018"/>`+
     `<path d="M19.2 24.4q2.8 2.4 5.6 0" stroke="#8a3a00" stroke-width="1" fill="none" stroke-linecap="round"/>`+
+    `<path d="M17.7 19.3q1.3-1.1 2.7-.7M23.6 18.6q1.4-.4 2.7.7" stroke="#7a4f2c" stroke-width=".65" fill="none" stroke-linecap="round"/>`+
+    `<ellipse cx="18.5" cy="24.3" rx="1.5" ry="1" fill="rgba(210,90,80,.24)"/><ellipse cx="25.5" cy="24.3" rx="1.5" ry="1" fill="rgba(210,90,80,.24)"/>`+
     royalItem('J', false)+
     // gorro de bufón sobre la cabeza
     `<g transform="translate(11.5,3.5) scale(.88)">${SVG.jester.replace(/<\/?svg[^>]*>/g,'')}</g>`+
@@ -2918,6 +3057,15 @@ function render(){
       <div class="chip" title="Modo de juego">🎯 ${MODE_LABELS[GAME_MODE]}</div>
       <div class="toggle ${help?'on':''}" onclick="toggleHelp()">Ayuda<div class="sw"><b></b></div></div>
       <button class="btn sm ghost" onclick="SFX.toggle()" title="${SFX.muted?'Activar sonido':'Silenciar'}" style="padding:4px 8px;min-height:0;font-size:16px;">${SFX.muted?'🔇':'🔊'}</button>
+      <div class="topmenu-wrap">
+        <button class="btn sm ghost" onclick="toggleTopMenu(event)" title="Más opciones" style="padding:4px 8px;min-height:0;font-size:16px;">⋮</button>
+        ${G.topMenuOpen ? `
+          <div class="topmenu-backdrop" onclick="toggleTopMenu()"></div>
+          <div class="topmenu-drop">
+            <button onclick="askRestart()">↻ Reiniciar partida</button>
+            <button class="danger" onclick="askQuit()">⏏ Terminar partida</button>
+          </div>` : ''}
+      </div>
     </div>
     <div class="felt">
       <div class="seats">${aiPanel(1)}${aiPanel(2)}${aiPanel(3)}</div>
@@ -2997,6 +3145,45 @@ function backToMenu(){
   G.phase = 'menu';
   render();
 }
+
+/* ---------------- Reiniciar / terminar partida (con confirmación) ---------------- */
+function toggleTopMenu(e){
+  if(e) e.stopPropagation();
+  G.topMenuOpen = !G.topMenuOpen;
+  render();
+}
+function confirmModal(title, msg, okLabel, okFn){
+  document.getElementById('overlay').innerHTML = `<div class="overlay">
+    <div class="panel" style="max-width:320px;">
+      <h2 style="margin-top:0;">${title}</h2>
+      <p style="color:var(--muted);margin:10px 0 20px;line-height:1.5;">${msg}</p>
+      <div style="display:flex;gap:10px;">
+        <button class="btn ghost" style="flex:1;" onclick="cancelConfirm()">Cancelar</button>
+        <button class="btn danger" style="flex:1;" onclick="${okFn}()">${okLabel}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function cancelConfirm(){
+  if(G.phase==='play' && !G.over) turn(); else render();
+}
+function askRestart(){
+  clearTimers();
+  G.topMenuOpen = false;
+  render();
+  confirmModal('¿Reiniciar partida?', 'Perderás el progreso de esta partida y empezarás una nueva.', 'Reiniciar', 'doRestart');
+}
+function doRestart(){ clearSave(); initGame(); }
+function askQuit(){
+  clearTimers();
+  G.topMenuOpen = false;
+  render();
+  confirmModal('¿Terminar partida?', 'Volverás al menú principal y se perderá el progreso actual.', 'Salir', 'doQuit');
+}
+function doQuit(){ clearSave(); backToMenu(); }
+function askNewOverSave(){
+  confirmModal('¿Empezar una partida nueva?', 'Tienes una partida guardada en curso. Si empiezas una nueva, se perderá.', 'Nueva partida', 'doRestart');
+}
 function confettiHTML(){
   const cols = ['#e7c14b','#c0392b','#2e6fb0','#2e8f52','#f5f0e0','#8e44ad','#d8a832'];
   const bits = Array.from({length:44}, (_,i)=>{
@@ -3053,6 +3240,7 @@ function menuHTML(){
       <span class="diff-desc">${desc}</span>
     </button>`;
   };
+  const hasSave = !!loadSave();
   return `<div class="overlay"><div class="panel" style="max-width:340px;">
     <div class="menu-wrap">
       <div class="menu-logo">CARE<span class="em">CACA</span></div>
@@ -3067,7 +3255,8 @@ function menuHTML(){
         </div>
       </div>
       <div class="menu-btns">
-        <button class="btn ok" style="font-size:17px;padding:14px;" onclick="initGame()">Jugar</button>
+        ${hasSave ? `<button class="btn ok" style="font-size:17px;padding:14px;" onclick="continueGame()">Continuar partida</button>
+        <button class="btn ghost" style="font-size:14px;padding:12px;" onclick="askNewOverSave()">Nueva partida</button>` : `<button class="btn ok" style="font-size:17px;padding:14px;" onclick="initGame()">Jugar</button>`}
         <button class="btn info" style="font-size:15px;padding:14px;" onclick="showInstructions()">Instrucciones</button>
       </div>
     </div>
@@ -3121,9 +3310,62 @@ function showMenu(){
   document.getElementById('overlay').innerHTML = menuHTML();
 }
 
+/* ---------------- Tutorial de bienvenida (solo la primera vez) ---------------- */
+const ONBOARD_KEY = 'carecaca_onboarded_v1';
+let _onbStep = 0;
+function onboardingSlides(){
+  return [
+    { icon: SVG.emblem, title: '¡Bienvenido a Carecaca!',
+      body: 'El clásico juego de cartas chileno. Sé el primero en quedarte sin cartas — el último en lograrlo es el <b>Carecaca</b>.' },
+    { icon: SVG.handcards, title: 'Tres fases por vencer',
+      body: 'Juegas primero tu <b>mano</b>, luego tu <b>mesa abierta</b> (boca arriba) y por último tu <b>mesa ciega</b> (boca abajo, a la suerte).' },
+    { icon: SVG.bolt, title: 'Cartas con truco',
+      body: '<b>2</b> libera el pozo · <b>7</b> obliga a jugar bajo · <b>8</b> salta turnos · <b>10</b> quema el pozo · <b>J</b> cambia el sentido · <b>Joker</b> manda el pozo al siguiente.' },
+    { icon: SVG.jester, title: 'Dos trucos más',
+      body: '<b>Elástico</b>: si tienes la carta idéntica a la recién jugada, tírala aunque no sea tu turno.<br><b>Enganche</b>: si robas el mismo valor que acabas de jugar, sigue de inmediato.' },
+  ];
+}
+function onboardingHTML(){
+  const slides = onboardingSlides();
+  const s = slides[_onbStep];
+  const last = _onbStep === slides.length-1;
+  const dots = slides.map((_,i)=>`<span class="onb-dot${i===_onbStep?' on':''}"></span>`).join('');
+  return `<div class="overlay"><div class="panel" style="max-width:340px;">
+    <div class="onb-icon">${s.icon}</div>
+    <h2 style="margin:4px 0 10px;">${s.title}</h2>
+    <p style="color:var(--muted);line-height:1.55;min-height:64px;">${s.body}</p>
+    <div class="onb-dots">${dots}</div>
+    <div style="display:flex;gap:10px;margin-top:6px;">
+      ${_onbStep>0 ? `<button class="btn ghost" style="flex:1;" onclick="onbPrev()">Atrás</button>` : ''}
+      <button class="btn ok" style="flex:1;" onclick="${last?'onbFinish()':'onbNext()'}">${last?'¡A jugar!':'Siguiente'}</button>
+    </div>
+    ${!last ? `<div style="margin-top:10px;"><button class="btn ghost sm" onclick="onbFinish()">Saltar</button></div>` : ''}
+  </div></div>`;
+}
+function onbNext(){ _onbStep++; document.getElementById('overlay').innerHTML = onboardingHTML(); }
+function onbPrev(){ _onbStep--; document.getElementById('overlay').innerHTML = onboardingHTML(); }
+function onbFinish(){
+  try{ localStorage.setItem(ONBOARD_KEY, '1'); }catch(e){}
+  showMenu();
+}
+function showOnboarding(){
+  _onbStep = 0;
+  document.getElementById('overlay').innerHTML = onboardingHTML();
+}
+
 /* ---------------- Arranque ---------------- */
 G.phase = 'menu';
 render();
+let _hasSave = false;
+try{ _hasSave = !!loadSave(); }catch(e){}
+try{
+  if(!localStorage.getItem(ONBOARD_KEY) && !_hasSave) showOnboarding();
+}catch(e){}
+
+// PWA: cachea el juego para que funcione instalado y sin conexión
+if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')){
+  window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+}
 </script>
 
 
