@@ -1,6 +1,6 @@
 // Service worker de Carecaca: cachea el juego completo para que funcione sin conexión.
 // Sube la versión (v2, v3…) cuando publiques cambios de index.html para invalidar el caché viejo.
-const CACHE = 'carecaca-v2';
+const CACHE = 'carecaca-v3';
 const ASSETS = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {
