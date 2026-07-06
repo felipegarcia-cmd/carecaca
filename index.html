@@ -1655,6 +1655,7 @@ function resumeGame(){
   if(!snap || !snap.players || !snap.players.length) return false;
   closeOverlay();
   MUSIC.start();
+  _elChain = null;
   Object.assign(G, {
     players: snap.players, pile: snap.pile, drawPile: snap.drawPile,
     dir: snap.dir, lo: snap.lo, cur: snap.cur,
@@ -1722,6 +1723,7 @@ function mkPlayer(id,name,human,diff){ return {id,name,human,diff:diff||null,han
 function initGame(){
   closeOverlay();
   MUSIC.start();
+  _elChain = null;
   // Mezcla aleatoria de dificultades entre las 3 IA según el modo
   const diffs = shuffle(DIFF_MODES[GAME_MODE].slice());
   const deck  = shuffle(buildDeck());
@@ -2058,8 +2060,9 @@ function continueAfterPlay(pi, source, res){
       burnParticles();
       setTimeout(()=>{
         G.burnFlash = false;
-        if(!isOut(p)){ G.cur = pi; turn(); }
-        else advanceFrom(pi, res.eights);
+        // La quema absorbe el efecto de los 8: si venía una cadena heredada, se descarta
+        if(!isOut(p)){ _elChain = null; G.cur = pi; turn(); }
+        else advanceEights(pi, res.eights);
       }, BURN_MS);
     }, 600);
     return;
@@ -2069,7 +2072,21 @@ function continueAfterPlay(pi, source, res){
   const el = findElastico(G.lastPlayedCard, pi);
   if(el>=0){ startElastico(el, pi, res); return; }
 
-  advanceFrom(pi, res.eights);
+  advanceEights(pi, res.eights);
+}
+
+/* Si esta jugada de 8 viene de un elástico que interrumpió una cadena de 8 ajena,
+   la protección de "nunca me salto a mí mismo" sigue siendo de quien tiró primero
+   — no de quien reaccionó con el elástico — y los 8 se suman a esa cadena. */
+let _elChain = null;
+function advanceEights(pi, eights){
+  if(_elChain){
+    const {origPi, origEights} = _elChain;
+    _elChain = null;
+    advanceFrom(origPi, origEights + eights);
+    return;
+  }
+  advanceFrom(pi, eights);
 }
 
 function advanceFrom(pi, eights){
@@ -2245,7 +2262,7 @@ function startElastico(el, pi, res){
         G.aiElasticoPulse = true;
         render();
         // El zumbazo y el vuelo van juntos: la carta sale mientras la pantalla pulsa
-        setTimeout(()=>{ doElastico(el, card); }, 160);
+        setTimeout(()=>{ doElastico(el, card, pi, res); }, 160);
         setTimeout(()=>{ G.aiElasticoPulse = false; }, 620);
       } else {
         advanceFrom(pi, res.eights);
@@ -2253,10 +2270,12 @@ function startElastico(el, pi, res){
     }, thinkMs);
   }
 }
-function doElastico(el, card){
+function doElastico(el, card, origPi, origRes){
   clearTimers(); G.pending=null;
   say(`⚡ ¡ELÁSTICO! ${G.players[el].name} tiró ${label(card)}`);
   G.elasticoFly = true;             // el clon volador lleva la estela eléctrica
+  // Si interrumpe una cadena de 8 ajena, esos 8 no se pierden: se heredan
+  if(origRes && origRes.eights>0) _elChain = {origPi, origEights: origRes.eights};
   commitPlay(el, [card], 'hand');   // continúa el turno desde quien lo hizo
 }
 
@@ -2558,13 +2577,15 @@ function onJokerTake(){
 function onElastico(){
   if(!G.pending || G.pending.type!=='elastico') return;
   clearTimers();
-  const {card} = G.pending;
+  const {card, origin, res} = G.pending;
   G.pending = null;
   // La carta vuela YA — el flash eléctrico acompaña el vuelo, no lo precede
   G.elasticoFly  = true;
   G.elasticoPlay = card;
   screenShake(320);
   say(`⚡ ¡ELÁSTICO! ${G.players[0].name} tiró ${label(card)}`);
+  // Si interrumpe una cadena de 8 ajena, esos 8 no se pierden: se heredan
+  if(res && res.eights>0) _elChain = {origPi: origin, origEights: res.eights};
   setTimeout(()=>{ G.elasticoPlay = false; render(); }, 800);
   commitPlay(0, [card], 'hand');
 }
