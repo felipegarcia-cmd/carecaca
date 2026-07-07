@@ -820,6 +820,8 @@
     50%    {box-shadow:0 2px 6px rgba(0,0,0,.45), 0 0 0 2px rgba(255,218,110,.85), 0 0 10px rgba(231,193,75,.5);}
   }
   .card.can{animation:canPulse 1.6s ease-in-out infinite; will-change:box-shadow;}
+  /* Feedback táctil: la carta "responde" bajo el dedo apenas se toca */
+  .seat-hand .card.clk:active{filter:brightness(1.14);}
   /* Brillo foil que barre las cartas especiales (Joker y 10) */
   @keyframes foilSweep{
     0%, 58%{transform:translateX(-160%) skewX(-18deg);}
@@ -1572,7 +1574,7 @@ const SAVE = new Set(['2','10','Joker']);             // la IA reserva estos par
 
 // Pacing: pensado para sentirse como un juego entre amigos — ni atropellado ni lento
 let AI_DELAY = 1700;             // pausa antes de que la IA juegue (refleja "pensando")
-const AFTER_PLAY_MS  = 700;      // pausa después de cada jugada antes del siguiente turno
+const AFTER_PLAY_MS  = 580;      // pausa después de cada jugada antes del siguiente turno
 const SKIP_FLASH_MS  = 1900;     // duración del overlay "saltado" por un 8
 const REVERSE_MS     = 1100;     // duración del overlay de cambio de sentido
 const BURN_MS        = 2000;     // duración del flash QUEMADO
@@ -1970,6 +1972,83 @@ function flyCards(pi, cs){
   }catch(e){}
 }
 
+/* ---- FLIP del abanico: captura posiciones, y tras el re-render anima cada
+   carta desde donde estaba hacia donde quedó (las nuevas llegan desde el mazo).
+   Es la técnica estándar de los juegos de cartas móviles: nada "salta", todo desliza. ---- */
+function captureFan(){
+  const m = {};
+  document.querySelectorAll('#sec-hand [data-fan-cid]').forEach(w=>{
+    m[w.getAttribute('data-fan-cid')] = w.getBoundingClientRect();
+  });
+  return m;
+}
+function animateFan(prev, newIds){
+  try{
+    const deck = document.querySelector('.deck-stack');
+    const dr = deck ? deck.getBoundingClientRect() : null;
+    let k = 0;
+    document.querySelectorAll('#sec-hand [data-fan-cid]').forEach(w=>{
+      const id = w.getAttribute('data-fan-cid');
+      const card = w.firstElementChild;
+      if(!card) return;
+      const r = w.getBoundingClientRect();
+      if(newIds && newIds.has(id)){
+        // Carta recién robada: llega volando desde el mazo
+        if(!dr) return;
+        const dx = (dr.left+dr.width/2) - (r.left+r.width/2);
+        const dy = (dr.top +dr.height/2) - (r.top +r.height/2);
+        card.animate(
+          [{transform:`translate(${dx}px,${dy}px) rotate(-10deg) scale(.85)`, opacity:.35},
+           {transform:'none', opacity:1}],
+          {duration:320, delay:120 + (k++)*70, easing:'cubic-bezier(.3,1.25,.45,1)', fill:'backwards'});
+      } else if(prev && prev[id]){
+        // Carta que se reacomodó: desliza desde su posición anterior
+        const dx = prev[id].left - r.left;
+        const dy = prev[id].top  - r.top;
+        if(Math.abs(dx)+Math.abs(dy) < 2) return;
+        card.animate(
+          [{transform:`translate(${dx}px,${dy}px)`},{transform:'none'}],
+          {duration:240, easing:'cubic-bezier(.35,1,.4,1)'});
+      }
+    });
+  }catch(e){}
+}
+
+/* ---- El pozo vuela hacia quien lo toma (reversos, para no revelar cartas) ---- */
+function flyPozoTo(pi){
+  try{
+    const pozo = document.querySelector('.pozo');
+    if(!pozo || !G.pile.length) return;
+    const pr = pozo.getBoundingClientRect();
+    const target = pi===0
+      ? document.getElementById('sec-hand')
+      : document.querySelectorAll('.seats .ai')[pi-1];
+    if(!target) return;
+    const tr = target.getBoundingClientRect();
+    const ps = pileCardSize();
+    const n = Math.min(G.pile.length, 5);
+    for(let i=0;i<n;i++){
+      const w = document.createElement('div');
+      w.innerHTML = backHTML(ps.cls);
+      const c = w.firstChild;
+      Object.assign(c.style, {
+        position:'fixed', left:pr.left+'px', top:pr.top+'px',
+        zIndex:'998', pointerEvents:'none', margin:'0',
+        transition:`transform .4s cubic-bezier(.5,.05,.4,1) ${i*60}ms, opacity .4s ease ${i*60}ms`,
+        willChange:'transform',
+      });
+      document.body.appendChild(c);
+      const dx = (tr.left+tr.width/2) - (pr.left+ps.w/2) + (Math.random()*36-18);
+      const dy = (tr.top +tr.height/2) - (pr.top +ps.h/2);
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{
+        c.style.transform = `translate(${dx}px,${dy}px) rotate(${Math.random()*40-20}deg) scale(${pi===0?0.9:0.45})`;
+        c.style.opacity = '0.1';
+      }));
+      setTimeout(()=>c.remove(), 480+i*60);
+    }
+  }catch(e){}
+}
+
 function commitPlay(pi, cs, zone){
   flyCards(pi, cs);
   const p = G.players[pi];
@@ -2014,23 +2093,29 @@ function effectNote(cs, res){
 function postPlay(pi, source, res){
   const p = G.players[pi];
   if(source==='hand'){
+    const prevFan = p.human ? captureFan() : null;
     const drawn = drawUp(p);
     // Enganche: carta robada con mismo número que la recién jugada
-    if(!res.jokerTarget){
-      const eng = drawn.find(c => G.lastPlayedCard && c.v===G.lastPlayedCard.v);
-      if(eng){
-        if(p.human){
-          G.pending = {type:'enganche', card:eng, res};
-          SFX.enganche(); buzz(30);
-          render();
-          startCountdown(ENGANCHE_MS, ()=>{ if(G.pending?.type==='enganche') onEnganche(false); });
-          return;            // espera decisión humana (o timeout)
-        } else if(aiWantEnganche(p, eng)){
-          say(`🔗 ${p.name} engancha ${label(eng)}`);
-          render();
-          setTimeout(()=>commitPlay(pi,[eng],'hand'), 900);
-          return;
-        }
+    const eng = !res.jokerTarget
+      ? drawn.find(c => G.lastPlayedCard && c.v===G.lastPlayedCard.v)
+      : null;
+    // Humano sin enganche: las robadas llegan volando desde el mazo y el abanico desliza
+    if(p.human && drawn.length && !eng){
+      render();
+      animateFan(prevFan, new Set(drawn.map(c=>c.id)));
+    }
+    if(eng){
+      if(p.human){
+        G.pending = {type:'enganche', card:eng, res};
+        SFX.enganche(); buzz(30);
+        render();
+        startCountdown(ENGANCHE_MS, ()=>{ if(G.pending?.type==='enganche') onEnganche(false); });
+        return;            // espera decisión humana (o timeout)
+      } else if(aiWantEnganche(p, eng)){
+        say(`🔗 ${p.name} engancha ${label(eng)}`);
+        render();
+        setTimeout(()=>commitPlay(pi,[eng],'hand'), 900);
+        return;
       }
     }
   }
@@ -2166,6 +2251,7 @@ function aiTake(pi){
   floatNum(`+${n}`, '#ff8f86');
   G.takeAnim = {pi, n};
   render();
+  flyPozoTo(pi);
   setTimeout(()=>{ doTake(pi); render(); setTimeout(()=>{ G.takeAnim=null; afterTake(); }, 800); }, 900);
 }
 
@@ -2222,6 +2308,7 @@ function jokerTake(target){
   SFX.take();
   floatNum(`+${n}`, '#ff8f86');
   G.takeAnim = {pi:target, n};
+  flyPozoTo(target);   // antes de doTake: el pozo aún está lleno en pantalla
   doTake(target);
   // Los Jokers se queman al usarse — se eliminan del juego
   const burned = t.hand.filter(c=>c.v==='Joker');
@@ -2301,6 +2388,7 @@ function blindPlay(pi, card){
     G.takeAnim = {pi, n: G.pile.length};
     if(p.human) G.preBurn = true;
     render();
+    flyPozoTo(pi);
     const delay = p.human ? 1000 : 1100;
     setTimeout(()=>{
       if(p.human) G.preBurn = false;
@@ -2483,6 +2571,9 @@ function onCardClick(id){
 function quickUpdateSelection(){
   const root = document.getElementById('app');
   if(!root) return;
+  // Este atajo toca el DOM sin pasar por render(): esas secciones quedan
+  // "sucias" en el caché y el próximo render debe repintarlas siempre.
+  _rc['sec-hand'] = _rc['sec-mesa'] = _rc['sec-actions'] = _rc['sec-handinfo'] = null;
   // 1) Toggle .sel en cada card clickeable
   root.querySelectorAll('.card.clk[data-cid]').forEach(el=>{
     const cid = el.getAttribute('data-cid');
@@ -2549,6 +2640,7 @@ function onTake(){
   G.takeAnim = {pi:0, n};
   say(`Tomas el pozo (${n}) — sigue ${G.players[G.lastPlayed].name}`);
   render();   // primero se ve el pozo entero + animación "+N cartas"
+  flyPozoTo(0);
   setTimeout(()=>{
     doTake(0); render();
     setTimeout(()=>{ G.takeAnim=null; afterTake(); }, 500);
@@ -2857,7 +2949,8 @@ function cardHTML(c, opt={}){
   if(opt.pulse) cls.push('elastico-pulse');
   if(opt.enganche) cls.push('enganche');
   if(opt.click) cls.push('clk');
-  const onclick = opt.click ? ` onclick="${opt.click}"` : '';
+  // pointerdown responde ~80-100ms antes que click en móvil: el tacto se siente inmediato
+  const onclick = opt.click ? ` onpointerdown="${opt.click}"` : '';
   const styleAttr = opt.dealDelay != null ? ` style="animation:dealIn .45s cubic-bezier(.34,1.56,.64,1) ${opt.dealDelay}ms both"` : '';
   const dataAttr  = (opt.cid ? ` data-cid="${opt.cid}"` : ` data-cid="${c.id}"`) + (opt.can ? ' data-can="1"' : '');
   const v = c.v==='Joker' ? 'JK' : c.v;
@@ -2987,7 +3080,7 @@ function centerHTML(){
       </div>
       <div class="pilecol">
         <div class="pilelbl">Pozo</div>
-        <div class="pozo${G.burnFlash?' flash':''}" onclick="onPozoTap()">${pozoInner}<div class="deck-count pz">${G.pile.length}</div></div>
+        <div class="pozo${G.burnFlash?' flash':''}" onpointerdown="onPozoTap()">${pozoInner}<div class="deck-count pz">${G.pile.length}</div></div>
       </div>
     </div>
     ${turnLine}
@@ -3018,7 +3111,7 @@ function humanTableHTML(sug){
     }
     if(tdC){
       const dd = dealingNow ? i*160 : null;
-      const click = canTd ? `onclick="onBlindClick('${tdC.id}')" style="cursor:pointer"` : '';
+      const click = canTd ? `onpointerdown="onBlindClick('${tdC.id}')" style="cursor:pointer"` : '';
       html += `<div class="slot-td" data-tds="${tdC.tdSlot}" ${click}>${backHTML('', dd)}</div>`;
     }
     if(tuC){
@@ -3198,21 +3291,48 @@ function setupHTML(){
   </div></div>`;
 }
 
+/* Render seccionado con caché: la estructura se construye UNA vez y después solo
+   se repinta la sección cuyo HTML cambió. Evita reconstruir todo el DOM en cada
+   estado (que reiniciaba animaciones y causaba tirones en celulares). */
+let _rc = {};
+function _sect(id, html){
+  if(_rc[id] === html) return;
+  _rc[id] = html;
+  const el = document.getElementById(id);
+  if(el) el.innerHTML = html;
+}
 function render(){
   const app = document.getElementById('app');
   const ov  = document.getElementById('overlay');
 
   // Menú inicial: solo overlay, tabla vacía
   if(G.phase === 'menu'){
-    app.innerHTML = '';
+    app.innerHTML = ''; _rc = {};
     ov.innerHTML  = menuHTML();
     return;
   }
 
   const help = G.helpMode;
   const sug = (G.helpMode && isHumanTurn()) ? getSuggestion() : null;
-  app.innerHTML = `
-    <div class="topbar">
+
+  if(!document.getElementById('sec-topbar')){
+    _rc = {};
+    app.innerHTML = `
+    <div class="topbar" id="sec-topbar"></div>
+    <div class="felt">
+      <div class="seats" id="sec-seats"></div>
+      <div id="sec-center"></div>
+      <div id="sec-ticker"></div>
+      <div class="mesa-wrap" id="sec-mesa"></div>
+    </div>
+    <div class="lower" id="sec-lower">
+      <div class="seat-hand" id="sec-hand"></div>
+      <div class="hand-info" id="sec-handinfo"></div>
+      <div class="seat-actions" id="sec-actions"></div>
+    </div>`;
+  }
+
+  _sect('sec-topbar', `
       <div class="brand">CARE<span class="em">CACA</span><span class="brand-emb">${SVG.emblem}</span></div>
       <div class="grow"></div>
       <div class="chip mazo-chip">Mazo: ${G.drawPile.length}</div>
@@ -3229,27 +3349,24 @@ function render(){
             <button onclick="askRestart()">↻ Reiniciar partida</button>
             <button class="danger" onclick="askQuit()">⏏ Terminar partida</button>
           </div>` : ''}
-      </div>
-    </div>
-    <div class="felt">
-      <div class="seats">${aiPanel(1)}${aiPanel(2)}${aiPanel(3)}</div>
-      ${centerHTML()}
-      ${tickerHTML()}
-      <div class="mesa-wrap">${humanTableHTML(sug)}</div>
-    </div>
-    <div class="lower${isHumanTurn()?' is-my-turn':''}">
-      <div class="seat-hand">${humanHandHTML(sug)}</div>
-      <div class="hand-info">${humanHandInfo(sug)}</div>
-      <div class="seat-actions">${actionsHTML(sug)}</div>
-    </div>
-  `;
+      </div>`);
+  _sect('sec-seats',    aiPanel(1)+aiPanel(2)+aiPanel(3));
+  _sect('sec-center',   centerHTML());
+  _sect('sec-ticker',   tickerHTML());
+  _sect('sec-mesa',     humanTableHTML(sug));
+  _sect('sec-hand',     humanHandHTML(sug));
+  _sect('sec-handinfo', humanHandInfo(sug));
+  _sect('sec-actions',  actionsHTML(sug));
+  document.getElementById('sec-lower').className = 'lower' + (isHumanTurn() ? ' is-my-turn' : '');
 
-  // Overlays de juego (por prioridad)
+  // Overlays de juego (por prioridad) — también con caché: si el overlay no
+  // cambió, no se repinta (repintarlo reiniciaba su animación a mitad de camino)
+  let ovHtml = null;
   if(G.jokerAnim){
     const from = G.players[G.jokerAnim.from];
     const to   = G.players[G.jokerAnim.to];
     const toHuman = G.jokerAnim.to === 0;
-    ov.innerHTML = `<div class="jk-overlay">
+    ovHtml = `<div class="jk-overlay">
       <div class="jk-emoji">${SVG.jester}</div>
       <div class="jk-title">¡JOKER!</div>
       <div class="jk-target">${toHuman ? '¡TE TOCA EL POZO!' : `→ ${to.name} al pozo`}</div>
@@ -3259,7 +3376,7 @@ function render(){
     const arrow = G.revAnim.newDir === 1 ? '↻' : '↺';
     const txt   = G.revAnim.newDir === 1 ? 'SENTIDO HORARIO' : 'SENTIDO ANTIHORARIO';
     const deg   = G.revAnim.newDir === 1 ? '360deg' : '-360deg';
-    ov.innerHTML = `<div class="rev-overlay">
+    ovHtml = `<div class="rev-overlay">
       <div class="rev-inner">
         <span class="rev-arrow" style="--rev-deg:${deg}">${arrow}</span>
         <div class="rev-label">🔄 ${txt}</div>
@@ -3270,7 +3387,7 @@ function render(){
     if(a.humanSkipped){
       // Primera persona — pantalla completa
       const numCircles = '8'.repeat(a.n);
-      ov.innerHTML = `<div class="eight-overlay human-skip">
+      ovHtml = `<div class="eight-overlay human-skip">
         <div class="eight-inner">
           <div class="eight-big">${numCircles}</div>
           <div class="eight-title">¡TE SALTARON!</div>
@@ -3279,12 +3396,12 @@ function render(){
       </div>`;
     } else {
       // Pulso naranja suave — no bloquea la pantalla
-      ov.innerHTML = `<div class="ai-skip-pulse"></div>`;
+      ovHtml = `<div class="ai-skip-pulse"></div>`;
     }
   } else if(G.elasticoPlay){
     // El humano acaba de jugar su elástico — cinematica primera persona
     const eCard = G.elasticoPlay; // objeto carta guardado en onElastico
-    ov.innerHTML = `<div class="elastico-overlay">
+    ovHtml = `<div class="elastico-overlay">
       <div class="elastico-inner">
         <div class="elastico-big">${SVG.bolt}</div>
         <div class="elastico-title">¡ELÁSTICO!</div>
@@ -3293,15 +3410,23 @@ function render(){
     </div>`;
   } else if(G.aiElasticoPulse){
     // Una IA usó elástico — pulso cian (zumbazo)
-    ov.innerHTML = `<div class="ai-el-pulse"></div>`;
+    ovHtml = `<div class="ai-el-pulse"></div>`;
   } else if(G.phase==='setup'){
-    ov.innerHTML = setupHTML();
+    ovHtml = setupHTML();
   } else if(!G.over){
-    ov.innerHTML = '';
+    ovHtml = '';
+  }
+  if(ovHtml !== null && _rc['ov'] !== ovHtml){
+    _rc['ov'] = ovHtml;
+    ov.innerHTML = ovHtml;
   }
 }
 
-function closeOverlay(){ const ov=document.getElementById('overlay'); if(ov) ov.innerHTML=''; }
+function closeOverlay(){
+  const ov=document.getElementById('overlay');
+  if(ov) ov.innerHTML='';
+  _rc['ov'] = null;   // se escribió el overlay por fuera de render(): invalidar caché
+}
 
 function backToMenu(){
   clearTimers();
@@ -3317,6 +3442,7 @@ function toggleTopMenu(e){
   render();
 }
 function confirmModal(title, msg, okLabel, okFn){
+  _rc['ov'] = null;   // escritura directa del overlay: invalidar caché de render
   document.getElementById('overlay').innerHTML = `<div class="overlay">
     <div class="panel" style="max-width:320px;">
       <h2 style="margin-top:0;">${title}</h2>
